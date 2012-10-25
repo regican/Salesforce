@@ -19,7 +19,7 @@ class Salesforce {
 		$this->oauth	= array(
 			'client_id'		=>	$this->config->item('sfdc_client_id'),
 			'client_secret'	=>  $this->config->item('sfdc_client_secret'),
-			'grant_type'	=>  "password",
+			'grant_type'	=>  $this->config->item('sfdc_grant_type'),
 			'username'		=>	$this->config->item('sfdc_username'),
 			'password'		=>	$this->config->item('sfdc_password').$this->config->item('sfdc_security_token')
 		);
