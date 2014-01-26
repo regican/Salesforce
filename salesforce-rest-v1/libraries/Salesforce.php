@@ -239,7 +239,13 @@ class Salesforce {
 		);
 		
 		try {
-			$url = $this->cnf['endpoints']['sobjects']."/{object_name}/{$upsert_key}/{$upsert_key}";
+			if (!empty($field_list) && !isset($field_list[$object_name])){
+				$field_list[$object_name] = array(
+					$upsert_key => $upsert_val
+				);
+			}
+			
+			$url = $this->cnf['endpoints']['sobjects']."/{$object_name}/{$upsert_key}/{$upsert_val}";
 			$call = $this->_execute('PATCH', $url, $field_list);
 			if ($call){
 				foreach($call as $key => $val){
@@ -333,7 +339,10 @@ class Salesforce {
 	 * @return array 
 	 */
 	private function _execute($method = 'GET', $url = '', $data = array()){
-		$response = array('success' => FALSE);
+		$response = array(
+			'success' => FALSE,
+			'elapsed' => microtime(TRUE)	
+		);
 		$curl_options = array(
 			CURLOPT_HTTPHEADER => array(
 				"Authorization: Bearer ".$this->get_token(),
@@ -371,7 +380,7 @@ class Salesforce {
 		$response['elapsed'] = microtime(TRUE) - $response['elapsed'];
 		
 		//update return array for successful calls
-		if ($response['result']){
+		if ($response['result'] && !$response['error'] && strrpos($response['status'],' OK') !== FALSE){
 			$response['success'] = TRUE;
 			$response['result']  = json_decode($response['result']);
 		}
@@ -379,17 +388,30 @@ class Salesforce {
 		//PATCH method doesn't have any return
 		elseif (!$response['result'] && $response['code'] == 204){
 			$url  = parse_url($url); 				// parse the url
-     		$path = explode("/", $keys['path']); 	// splitting the path
+     		$path = explode("/", $url['path']); 	// splitting the path
 	 
+	 		$response['success'] = TRUE;
 			$response['result'] = (object) array(
 				'id' => end($path),					// get the value of the last element containing the id
 				'success' => TRUE,
 				'errors' => array()
 			);
+			
+		//format output
+		}else {
+			if ($response['result']){
+				$response['result'] = json_decode($response['result']);
+			}
+			
+		}
+		
+		if (is_array($response['result'])){
+			$response['result'] = $response['result'][0];
 		}
 		
 		if ($this->cnf['debug']){
-			echo '<pre>'.__METHOD__. " --> ";
+			$callers=debug_backtrace();
+			echo '<pre>'.__CLASS__.'::'.$callers[1]['function'].'::'.__FUNCTION__. " --> ";
 			print_r($response);
 			echo '</pre>';
 		}
@@ -425,11 +447,12 @@ class Salesforce {
 			case "300":
 				$status = "Class: Salesforce - The value used for an external ID exists in more than one record. The response body contains the list of matching records.";
 				break;
-				
+			
+			default:	
 			case "204":
 			case "200":
 				$status = "{$http_code} OK";
-			default:
+			
 		}
 		
 		return $status;

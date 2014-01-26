@@ -45,10 +45,12 @@ Example usage for retrieving a Merchandise__c record using an external ID
 	$results = $this->salesforce->get('Merchandise__c','MerchandiseExtID__c/123'); 
 
 
+
 ***create()***
 Example for creating a new Account
 
 	$results = $this->salesforce->create('Account', array('Name' => 'Regican'))
+
 
 
 ***update()***
@@ -61,6 +63,7 @@ Example usage for updating fields in a Document object
 	); 
 
 
+
 ***upsert()***
 Example for upserting a record that does not yet exist
 
@@ -71,14 +74,16 @@ Example for upserting a record that does not yet exist
 	);
 	
 
+
 ***query()***
 Example usage for executing a query
 
-	$results = $this->salesforce->query("SELECT name FROM Account");
+	$results = $this->salesforce->query("SELECT name FROM Account WHERE Id = '001D000000INjVe'");
 
 Example usage for executing a query for deleted Merchandise__c records
 
 	$results = $this->salesforce->query("SELECT Name FROM Merchandise__c WHERE isDeleted = TRUE");
+
 
 
 ***search()***
