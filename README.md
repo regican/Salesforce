@@ -1,63 +1,88 @@
 ##Salesforce REST API for Codeigniter with sparks support
 
 ###Overview
-A Codeigniter library to interact with the Salesforce.com REST API.  The library currently has 3 methods for interacting with Salesforce.com.
+A Codeigniter library to interact with the Salesforce.com REST API.
+
 
 ###Methods
 to load the module:
 
-	$this->load->sparks('salesforce-rest-v1');
+	$this->load->spark('salesforce-rest-v1');
 
-to access methods:
+available methods:
 
-	$this->salesforce->get_record();
-	$this->salesforce->get_query();
-	$this->salesforce->update_record(); 
+	$this->salesforce->get(OBJECT, ID, DATA);
+	$this->salesforce->create(OBJECT, DATA);
+	$this->salesforce->update(OBJECT, ID, DATA);
+	$this->salesforce->upsert(OBJECT, KEY, VALUE, DATA);
+	$this->salesforce->query(QUERY);
+	$this->salesforce->search(QUERY);
+	
+	$this->salesforce->auth();
+	$this->salesforce->get_token();
+	$this->salesforce->save_token(TOKEN);
 
 ###Configuration
 the configuration file is located at config/salesforce.php
 
-	$config['sfdc_instance_url'] = '';
-	$config['sfdc_api_version'] = 'v26.0';
-	$config['sfdc_client_id'] = '';
-	$config['sfdc_client_secret'] = '';
-	 
-	$config['sfdc_username'] = '';
-	$config['sfdc_password'] = '';
-	$config['sfdc_security_token'] = '';
+	'username' 			=> '',
+	'password'			=> '',
+	'security_token'	=> '',
+	
+	'consumer_key'		=> '',
+	'consumer_secret'	=> '',
+	'redirect_url'		=> '',
 
 
 ###Example Usage
-get_record:
+***get()***
+Example for retrieving values from fields on an Account object
 
-	$fields = array('Id','Name','Account.Id');
-	$results = $this->salesforce->get_record('opportunity','0062000000MjkRo', $fields); 
+	$results = $this->salesforce->get('Account','001D000000INjVe', array('AccountNumber', 'BillingPostalCode')); 
 
-get_query:
+Example usage for retrieving a Merchandise__c record using an external ID
 
-	$results = $this->salesforce->get_query(
-	     "SELECT Id, 
-	     Account.Name, 
-	     CloseDate, 
-	     CurrencyIsoCode, 
-	     Account.BillingPostalCode,
-	     Account.BillingStreet,
-	     Account.BillingState,
-	     Account.BillingCity,
-	     Account.BillingCountry,
-	     Renewal_Confirmation__c,
-	     StageName,
-	     Amount, 
-	     (SELECT Id, Description, PricebookEntry.Name, Licenced_Product__r.Id, Quantity, UnitPrice, ListPrice, TotalPrice FROM OpportunityLineItems WHERE Do_Not_Renew__c != true ORDER BY Description ASC) 
-	     FROM Opportunity WHERE Id='0062000000MjkRo'"); 
+	$results = $this->salesforce->get('Merchandise__c','MerchandiseExtID__c/123'); 
 
-update_record:
 
-	$data = array('Change_Details__c'=>$this->input->post('request_info'), 'Renewal_Confirmation__c'=>"Change Requested"); 
-	$this->salesforce->update_record('opportunity', '0062000000MjkRo', $data); 
+***create()***
+Example for creating a new Account
 
-- - -
+	$results = $this->salesforce->create('Account', array('Name' => 'Regican'))
 
-You can find the codeigniter thread here: http://codeigniter.com/forums/viewthread/212536/
 
-Original by Peter Guest from http://www.peterguest.co.za/?p=5
+***update()***
+Example usage for updating fields in a Document object
+
+	$this->salesforce->update('Document', '015D0000000N3ZZIA0', 
+		array(
+			'Name' => 'Updated Name', 
+		)
+	); 
+
+
+***upsert()***
+Example for upserting a record that does not yet exist
+
+	$this->salesforce->upsert('Account', 'customExtIdField__c', '11999',
+		array(
+			'Name' => 'Upserted Name', 
+		)
+	);
+	
+
+***query()***
+Example usage for executing a query
+
+	$results = $this->salesforce->query("SELECT name FROM Account");
+
+Example usage for executing a query for deleted Merchandise__c records
+
+	$results = $this->salesforce->query("SELECT Name FROM Merchandise__c WHERE isDeleted = TRUE");
+
+
+***search()***
+Example usage
+
+	$results = $this->salesforce->query("FIND {test}");
+

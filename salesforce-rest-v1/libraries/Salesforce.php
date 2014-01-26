@@ -5,76 +5,113 @@
  */
 class Salesforce {
 	
-	var $oauth = array();
+	var $cnf = array();
 
 	/**
 	 * Class constructor
 	 * @return void
 	 */
 	public function __construct() {
-		$this->load->config('salesforce', TRUE);
-		$this->load->library(array('input','encrypt','session'));
+		$this->load->config('salesforce');
+		$this->cnf = $this->config->item('salesforce-rest');	
 		
+		if (!$this->cnf['use_session'] && session_id() == '') {
+			session_start();	
+		}
 		
-		$this->oauth	= array(
-			'client_id'		=>	$this->config->item('sfdc_client_id'),
-			'client_secret'	=>  $this->config->item('sfdc_client_secret'),
-			'grant_type'	=>  $this->config->item('sfdc_grant_type'),
-			'username'		=>	$this->config->item('sfdc_username'),
-			'password'		=>	$this->config->item('sfdc_password').$this->config->item('sfdc_security_token')
-		);
-		
-		if($this->session->userdata('access_token') == FALSE):
-			$this->auth();
-		endif;		
+		if ( !$this->get_token() ){
+			$auth = $this->auth();
+			$this->save_token($auth['result']->access_token);
+		}
 	}
 	
 	/**
 	 * Get CI Instance - replaces old way of $this->ci =& get_instance();
 	 * @return bool
 	 */
-	public function __get($var)
-	{
+	public function __get($var) {
 		return get_instance()->$var;
 	}
 
 	
 	/**
 	 * Performs the authentication against Salesforce.com
-	 * @return bool
 	 */
     public function auth() {
+		$response = array(
+			'success' => FALSE,
+			'elapsed' => microtime(TRUE)	//for benchmarking
+		);
 		
-		$ch = curl_init();
-		curl_setopt($ch, CURLOPT_URL, $this->config->item('instance_url')."/services/oauth2/token");
-		curl_setopt($ch, CURLOPT_HEADER, FALSE);
-		curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
-		curl_setopt($ch, CURLOPT_POST, count($this->oauth));
-		curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($this->oauth));
-		curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+		//prepare data for auth and auth process
+		$data = array(
+			'client_id'		=>	$this->cnf['consumer_key'],
+			'client_secret'	=>  $this->cnf['consumer_secret'],
+			'redirect_uri'	=> 	$this->cnf['redirect_url'],
+			
+			'username'		=>	$this->cnf['username'],
+			'password'		=>	$this->cnf['password'].$this->cnf['security_token']
+		);
 		
-		$result = json_decode(curl_exec($ch));
+		//initiate curl call with endpoint and prepared data
+		$ch   = curl_init();
+				curl_setopt_array($ch, array(
+						CURLOPT_URL				=> $this->cnf['endpoints']['oauth2'],
+						CURLOPT_HEADER			=> FALSE,
+						CURLOPT_SSL_VERIFYPEER	=> FALSE,
+						CURLOPT_POST			=> count($data),
+						CURLOPT_POSTFIELDS		=> http_build_query($data).'&grant_type=password',
+						CURLOPT_RETURNTRANSFER	=> 1
+				));
 		
-		if(curl_error($ch)):
-   			show_error(curl_getinfo($ch).curl_error($ch));
-		else:
-			if($this->curl_status_check($ch, $result)):
-				$this->set_session($result);
-			else:
-				return FALSE;
-			endif;			
-		endif;
+		//save response
+		$response['result'] = curl_exec($ch);
+		$response['error'] 	= curl_error($ch);
+		$response['status'] = $this->_curl_status(curl_getinfo($ch, CURLINFO_HTTP_CODE), $response['result']);
+		$response['elapsed'] = microtime(TRUE) - $response['elapsed'];
+		
+		//update return array for successful calls
+		if ($response['result']){
+			$response['success'] = TRUE;
+			$response['result']  = json_decode($response['result']);
+		}
+		
+		if ($this->cnf['debug']){
+			echo '<pre>'.__METHOD__. " --> ";
+			print_r($response);
+			echo '</pre>';
+		}
+		return $response;
 	}
 	
 	/**
-	 * Sets the access token of the session variable.
-	 * @return bool 
+	 * Save the access token for future use.
 	 */
-	public function set_session($result) {
+	public function save_token($token = '') {
+		$response = array('success' => FALSE);
 		
-		if(isset($result->access_token)):
-			$this->session->set_userdata('access_token', $this->encrypt->encode($result->access_token));
-		endif;		
+		try {
+			if (empty($token)){
+				throw new Exception('token empty');		
+			}else {
+				if ($this->cnf['encrypt']){
+					$token = $this->encrypt->encode($token);
+				}
+			}
+			
+			if ($this->cnf['use_session']){
+				$this->session->set_userdata('access_token', $token);
+			}else {
+				$_SESSION['access_token'] = $token;
+			}
+			
+			$response['success'] = TRUE;
+			
+		}catch(Exception $e){
+			$response['errors'][] = $e->getMessage();
+		}
+		
+		return $response;
 	}
 	
 	/**
@@ -82,124 +119,335 @@ class Salesforce {
 	 * @return string|bool 
 	 */
 	public function get_token() {
+		$token = FALSE;
 		
-		return $this->encrypt->decode($this->session->userdata('access_token'));
+		if ($this->cnf['use_session']){
+			$token = ($this->session->userdata('access_token')) ? $this->session->userdata('access_token') : FALSE;
+		}else {
+			$token = isset($_SESSION['access_token']) ? $_SESSION['access_token'] : FALSE;
+		}
+		
+		if (!empty($token) && $this->cnf['encrypt']){
+			$token = $this->encrypt->decode($token);
+		}
+		
+		return $token;
 	}
 	
 	/**
-	 * Retrieve an sobject record and any specified fields.
-	 * @param string $object_name sObject Name
-	 * @param string $record_id sObject Record Id
-	 * @param mixed $field_list optional Array of fields to return only
-	 * @return Object
+	 * Get an Salesforce Object
+	 * @return array 
 	 */
-	public function get_record($object_name, $record_id, $field_list = FALSE) {
+	public function get($object_name, $object_id, $field_list = array()){
+		$response = array(
+			'success' 	=> FALSE,
+			'elapsed' 	=> microtime(TRUE)	//for benchmarking
+		);
 		
-		$request = trim($this->config->item('instance_url')).'/services/data/'.$this->api_version.'/sobjects/'.trim($object_name).'/'.trim($record_id);
+		try {
+			$url = $this->cnf['endpoints']['sobjects']."/{$object_name}/{$object_id}";
+			if (!empty($field_list)){
+				$url .= "?fields=".implode(",",$field_list);	
+			}
+			
+			$call = $this->_execute('GET', $url, $field_list);
+			if ($call){
+				foreach($call as $key => $val){
+					$response[$key] = $val;	
+				}
+			}else {
+				throw new Exception(__METHOD__.' execute call failed');	
+			}
+			
+		}catch(Exception $e){
+			$response['error'] = $e->getMessage();
+		}
 		
-		if($field_list):
-			$request .= '?fields='.implode(",",$field_list);
-		endif;
+		$response['elapsed'] = microtime(TRUE) - $response['elapsed'];
 		
-		return $this->execute_request($request);
+		return $response;
 	}
 	
-	public function update_record($object_name, $record_id, $field_list=FALSE) {
+	/**
+	 * Create an Salesforce Object
+	 * @return array 
+	 */
+	public function create($object_name, $field_list = array()){
+		$response = array(
+			'success' 	=> FALSE,
+			'elapsed' 	=> microtime(TRUE)	//for benchmarking
+		);
 		
-		$request = trim($this->config->item('instance_url')).'/services/data/'.$this->api_version.'/sobjects/'.trim($object_name).'/'.trim($record_id);
+		try {
+			$url = $this->cnf['endpoints']['sobjects']."/{$object_name}";
+			$call = $this->_execute('POST', $url, $field_list);
+			if ($call){
+				foreach($call as $key => $val){
+					$response[$key] = $val;	
+				}
+			}else {
+				throw new Exception(__METHOD__.' execute call failed');	
+			}
+			
+		}catch(Exception $e){
+			$response['error'] = $e->getMessage();
+		}
 		
-		return $this->execute_request($request, "PATCH", json_encode($field_list));
+		$response['elapsed'] = microtime(TRUE) - $response['elapsed'];
+		
+		return $response;
+	}
+	
+	/**
+	 * Update an Salesforce Object using an ID
+	 * @return array 
+	 */
+	public function update($object_name, $object_id, $field_list = array()){
+		$response = array(
+			'success' 	=> FALSE,
+			'elapsed' 	=> microtime(TRUE)	//for benchmarking
+		);
+		
+		try {
+			$url = $this->cnf['endpoints']['sobjects']."/{$object_name}/{$object_id}";
+			$call = $this->_execute('PATCH', $url, $field_list);
+			if ($call){
+				foreach($call as $key => $val){
+					$response[$key] = $val;	
+				}
+			}else {
+				throw new Exception(__METHOD__.' execute call failed');	
+			}
+			
+		}catch(Exception $e){
+			$response['error'] = $e->getMessage();
+		}
+		
+		$response['elapsed'] = microtime(TRUE) - $response['elapsed'];
+		
+		return $response;
+	}
+	
+	/**
+	 * Upsert using a Key and ID an Salesforce Custom Object
+	 * @return array 
+	 */
+	public function upsert($object_name, $upsert_key, $upsert_val, $field_list = array()){
+		$response = array(
+			'success' 	=> FALSE,
+			'elapsed' 	=> microtime(TRUE)	//for benchmarking
+		);
+		
+		try {
+			$url = $this->cnf['endpoints']['sobjects']."/{object_name}/{$upsert_key}/{$upsert_key}";
+			$call = $this->_execute('PATCH', $url, $field_list);
+			if ($call){
+				foreach($call as $key => $val){
+					$response[$key] = $val;	
+				}
+			}else {
+				throw new Exception(__METHOD__.' execute call failed');	
+			}
+			
+		}catch(Exception $e){
+			$response['error'] = $e->getMessage();
+		}
+		
+		$response['elapsed'] = microtime(TRUE) - $response['elapsed'];
+		
+		return $response;
 	}
 	
 	/**
 	 * Execute a SOQL query
-	 * @return Object
+	 * @return array 
 	 */
-	public function get_query($query = FALSE) {
+	public function query($query = ''){
+		$response = array(
+			'success' 	=> FALSE,
+			'query' 	=> $query,
+			'elapsed' 	=> microtime(TRUE)	//for benchmarking
+		);
 		
-		$request = trim($this->config->item('instance_url')).'/services/data/'.$this->api_version.'/query/';
+		try {
+			if (empty($query)){
+				throw new Exception(__METHOD__.' query not supplied');	
+			}
+			
+			$url = $this->cnf['endpoints']['query']."?q=".urlencode($query);
+			$call = $this->_execute('GET', $url);
+			if ($call){
+				foreach($call as $key => $val){
+					$response['result'] = $call;
+				}
+			}else {
+				throw new Exception(__METHOD__.' execute call failed');	
+			}
+			
+			$response['success'] = TRUE;
+		}catch(Exception $e){
+			$response['error'] = $e->getMessage();
+		}
 		
-		if($query):
-			$request .= '?q='.urlencode(trim($query));
-			return $this->execute_request($request);
-		endif;
+		$response['elapsed'] = microtime(TRUE) - $response['elapsed'];
+		
+		return $response;
 	}
-
-	public function execute_request($url, $http_method=FALSE, $data=FALSE) {
+	
+	/**
+	 * Search Salesforce using an SOSL query
+	 * @return array 
+	 */
+	public function search($query = ''){
+		$response = array(
+			'success' 	=> FALSE,
+			'search' 	=> $query,
+			'elapsed' 	=> microtime(TRUE)	//for benchmarking
+		);
+		
+		try {
+			if (empty($query)){
+				throw new Exception(__METHOD__.' search query not supplied');	
+			}
+			
+			$url = $this->cnf['endpoints']['search']."?q=".urlencode($query);
+			$call = $this->_execute('GET', $url);
+			if ($call){
+				$response['result'] = $call;
+			}else {
+				throw new Exception(__METHOD__.' execute call failed');	
+			}
+			
+			$response['success'] = TRUE;
+		}catch(Exception $e){
+			$response['error'] = $e->getMessage();
+		}
+		
+		$response['elapsed'] = microtime(TRUE) - $response['elapsed'];
+		
+		return $response;
+	}
+	
+	/**
+	 * (private) executes curl call to salesforce
+	 * @return array 
+	 */
+	private function _execute($method = 'GET', $url = '', $data = array()){
+		$response = array('success' => FALSE);
+		$curl_options = array(
+			CURLOPT_HTTPHEADER => array(
+				"Authorization: Bearer ".$this->get_token(),
+				"Content-type: application/json"
+			),
+			CURLOPT_URL => $url,
+			CURLOPT_CUSTOMREQUEST => $method,
+			CURLOPT_RETURNTRANSFER => TRUE
+		);
+		
+		switch($method){
+			default:
+			case 'GET':
+				$url = ($data) ? $url."?".http_build_query($data) : $url;
+				$curl_options[CURLOPT_URL] = $url;
+			break;
+			
+			case 'PATCH':
+			case 'POST':
+				$data = json_encode($data);
+				$curl_options[CURLOPT_POST] = TRUE;
+				$curl_options[CURLOPT_POSTFIELDS] = $data;
+				$curl_options[CURLOPT_HTTPHEADER][] = "Content-length: ".strlen($data);
+			break;
+		}
 		
 		$ch = curl_init();
+			  curl_setopt_array($ch, $curl_options);
 		
-		if($http_method == "PATCH"):
-			curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $http_method);
-			curl_setopt($ch, CURLOPT_POSTFIELDS, 	$data);
-		endif;
+		//save response
+		$response['result'] = curl_exec($ch);
+		$response['error'] 	= curl_error($ch);
+		$response['code'] 	= curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		$response['status'] = $this->_curl_status($response['code'], $response['result']);
+		$response['elapsed'] = microtime(TRUE) - $response['elapsed'];
 		
-		curl_setopt($ch, CURLOPT_URL, $url);
-		curl_setopt($ch, CURLOPT_HEADER, FALSE);
-		curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-		curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
-		curl_setopt($ch, CURLOPT_HTTPHEADER, array(
-					"Authorization: OAuth ".$this->get_token(),
-					"Content-type: application/json"));
+		//update return array for successful calls
+		if ($response['result']){
+			$response['success'] = TRUE;
+			$response['result']  = json_decode($response['result']);
+		}
 		
-		$result = json_decode(curl_exec($ch));
+		//PATCH method doesn't have any return
+		elseif (!$response['result'] && $response['code'] == 204){
+			$url  = parse_url($url); 				// parse the url
+     		$path = explode("/", $keys['path']); 	// splitting the path
+	 
+			$response['result'] = (object) array(
+				'id' => end($path),					// get the value of the last element containing the id
+				'success' => TRUE,
+				'errors' => array()
+			);
+		}
 		
-		//Request Error Handling
-		if(curl_error($ch)):
-			show_error(curl_getinfo($ch).curl_error($ch));
-		else:			
-			if($this->curl_status_check($ch, $result)):
-				return $result;
-			else:
-				return FALSE;
-			endif;		
-		endif;
+		if ($this->cnf['debug']){
+			echo '<pre>'.__METHOD__. " --> ";
+			print_r($response);
+			echo '</pre>';
+		}
+		
+		return $response;
 	}
 	
-	function process_error($result, $code) {
+	/**
+	 * (private) get the status of the curl call
+	 * @return string 
+	 */
+	private function _curl_status($http_code, $result) {
+		$status = "";
 		
-		if(is_array($result)):
-			show_error($code.": LEVEL1: process_error(): ".$result[0]->errorCode.' : '.$result[0]->message);
-		endif;
-		
-		if(isset($result->error)):
-			show_error($code.": LEVEL2: process_error(): ".$result->error.' : '.$result->error_description);
-		endif;
-	}
-	
-	function curl_status_check($ch, $result) {
-		
-		switch(curl_getinfo($ch, CURLINFO_HTTP_CODE)):
-				
-			case "404":
-				show_error("Class: Salesforce - The requested resource could not be found. Check the URI for errors, and verify that there are no sharing issues.");
+		switch($http_code) {
+			case "500":
+				$status = "Class: Salesforce - An error has occurred within Force.com, so the request could not be completed.";
 				break;
 				
-			case "300":
-				show_error("Class: Salesforce - The value used for an external ID exists in more than one record. The response body contains the list of matching records.");
-				break;
-				
-			case "400":
-				$this->process_error($result, "400");
+			case "415":
+				$status = "The entity specified in the request is in a format that is not supported by specified resource for the specified method.";
 				break;
 			
-			case "415":
-				show_error("The entity specified in the request is in a format that is not supported by specified resource for the specified method.");
-				break;
-				
+			case "404":
+				$status = "Class: Salesforce - The requested resource could not be found. Check the URI for errors, and verify that there are no sharing issues.";
+				break;	
+			
+			case "400":
 			case "401":
-				$this->process_error($result, "401");
+				$status = $this->_process_error($http_code, $result);
+				break;
+			
+			case "300":
+				$status = "Class: Salesforce - The value used for an external ID exists in more than one record. The response body contains the list of matching records.";
 				break;
 				
-			case "500":
-				show_error("Class: Salesforce - An error has occurred within Force.com, so the request could not be completed.");
-				break;
-					
+			case "204":
 			case "200":
-				return TRUE;
-				break;
+				$status = "{$http_code} OK";
+			default:
+		}
 		
-		endswitch;
+		return $status;
+	}
+	
+	/**
+	 * (private) get the full error message
+	 * @return string 
+	 */
+	private function _process_error($http_code, $result) {
+		if (is_array($result)){
+			return $http_code.": LEVEL1: process_error(): ".$result[0]->errorCode.' : '.$result[0]->message;
+		}
+		
+		if (isset($result->error)){
+			return $http_code.": LEVEL2: process_error(): ".$result->error.' : '.$result->error_description;
+		}
 	}
 }
+
 /* End of file Salesforce.php */
